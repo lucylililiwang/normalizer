@@ -7,6 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 import pandas as pd
 import io
+import chardet
 app = FastAPI()
 
 # We are defining the custom exceptions
@@ -111,7 +112,176 @@ async def extract_minmax(file:UploadFile = File(...),min_range: float = Query(0.
         return JSONResponse(content={"message": "Min-Max scaling successful", "output_file": output_path})
     else:
         return JSONResponse(content={"message": "Failed to read file"}, status_code=400)
+# We also need to create a function to check whether is missing deimiler
+def is_missing_delimiter(file_content, delimier=','):
+    """
+    Check if a CSV file is missing delimiters
     
+
+    Args:
+        - file_content (str): Content of the CSV file as a string.
+        - delimiter (str): Delimiter used in the CSV file (default is comma ',').
+
+    Returns:
+        - bool: True is missing delimiter are detected, False otherwise.
+        
+    """
+    # We are split the file content into lines
+    lines = file_content.splitlines()
+    # We are check the number of fields in each line
+    for line in lines:
+        fields = line.split(delimier)
+        if len(fields) < 2:
+            # The missing delimiter detected
+            return True
+    return False # No missing delimiter detected
+    
+# define another function to check for encoding
+def detect_encoding(file_content):
+    """
+    Detect the encoding of file content
+
+    Args:
+        - file_content (bytes): Content of the file as bytes.
+
+    
+    Returns:
+       - str: Detected encoding of the file content.
+    """
+    # We are detect the encoding of the file content
+    encoding_info = chardet.detect(file_content)
+    detected_encoding = encoding_info['encoding']
+    confidence = encoding_info['confidence']
+
+    # We are checking if the detected encoding has high confidence, return it
+    if detect_encoding and confidence > 0.5:
+        return detect_encoding
+    else:
+        # We are checking if the confidence is low or no encoding is detected, return None
+        return None
+    
+# We need to define another function to recover data
+def recover_data_missing_delimiter(file_content):
+    """
+    Recover data from a CSV file with missing delimiters.
+
+    Args:
+        - file_content (str): Content of the CSV file as a string
+
+    Returns:
+       list of lists: Recovered data where each sublist represents a row of the CSV.
+    """
+    # We are check if the file content is missing delimiters
+    if is_missing_delimiter(file_content):
+        # We are attempt to recover daya by inferring the delimiter
+        inferred_delimiter = inferred_delimiter(file_content)
+        # We are split lines using the inferred delimiter
+        lines = file_content.splitlines()
+        recovered_data = [line.split(inferred_delimiter) for line in lines]
+        return recovered_data
+    else:
+        #If delimiters are present, split lines using comma as the default delimiter
+        lines = file_content.splitlines()
+        recovered_data = [line.split(',') for line in lines]
+        return recovered_data
+    
+# after defining the error class, we need to have some method to fix the error
+# We need to define a function to fix error
+def fix_error_delimiter(error_type, file_name):
+    # we need to implement logic to fix or mitigate errord
+    if error_type == "InvalidFormatError":
+        # we need to attempt to recover data from the invalid format
+        recovered_data = recover_data_missing_delimiter(file_name)
+        # We are returing the recovered data
+        return recovered_data
+    
+# We need create another function to take care of the encoding problem
+def recover_date_encoding(file_content):
+    """
+    Recover data encoding from  byte string.
+
+    Args:
+        file_content (bytes): Content of the file as bytes.
+
+    
+    Returns:
+        str or None: Detected encoding of the file content, or NOne if encoding detection failed.
+    """
+    # We are define a try block
+    try:
+        # We are detect the encoding of the file content
+        encoding_info = chardet.detect(file_content)
+        detected_encoding = encoding_info['encoding']
+        confidence = encoding_info['confidence']
+        
+        if detect_encoding and confidence > 0.5:
+            return detected_encoding
+        else:
+            return None
+    except Exception as e:
+        # We are handle encoding detection errors
+        print(f"Error detecting encoding: {e}")
+        return None
+    
+# We need to create another function to check for incomplete lines
+def has_incomplete_lines(file_content, delimiter=','):
+    """
+    Check if a CSV file has incoplete lines or records.
+
+    Args:
+        file_content (str): Content of the CSV file as a string.
+        delimiter (str): Delimiter used in the CSV file, Default is ','.
+
+    
+    Returns:
+        bool: True if the last line of the file ends with a delimiter, indicating an incomplete line, False otherwise.
+    """
+    # We are Split the file content nto lines
+    lines = file_content.splitines()
+    # We are get the ast line
+    last_line = lines[-1] if lines else ''
+    # We are check if the last line ends with the delimiter
+    return last_line.endswith(delimiter)
+
+# We are creating a function to recover incomplete lines
+def recover_incomplete_lines(file_content, delimiter=','):
+    """
+    Recover data from a CSV file with incomplete lines or records
+
+    Args:
+        file_content (str): Content of the CSV file as a string.
+        delimiter (str):  Delimiter used in the CSV file, Default is ','.
+    
+
+    Returns:
+       list of lists: Recovered data where each sublist represents a row of  the CSV.
+       
+    """
+    recovered_data = []
+    incomplete_line = ''
+    
+    lines = file_content.splitlines()
+    for line in lines:
+        # We are Concatenate the current line with any leftoer incomplete line from the previous iterations
+        line = incomplete_line + line
+        # We are split the line using the specified delimiter
+        line_data = line.split(delimiter)
+        # We are check if the line is complete
+        if line.endswith(delimiter):
+            # We are checking if the line ends with the delimiter, int's incomplete
+            # We are stroe the incomplete line for the next iteration
+            incomplete_line = line
+        else:
+            #if the line is complete, append it to the recovered data
+            recovered_data.append(line_data)
+            incomplete_line = ''
+    # We are check if there's any leftover incomplete line
+    if incomplete_line:
+        # We are check if there's an incomplate line remaining after processing all lines,
+        # it's considered a separate incomplete record
+        recovered_data.append(incomplete_line.split(delimiter))
+    return recovered_data
+
 @app.post("/extract/categorical_variable_handling")   
 async def extract(file: UploadFile = File(...),min_range: float = Query(0.0), max_range: float = Query(1.0)):
     content = await file.read()
@@ -143,19 +313,19 @@ async def extract(file: UploadFile = File(...),min_range: float = Query(0.0), ma
 
 
 # We wish to add another post for batch jobs
-@app.post("/extract/batch")
-async def extract_batch(files: List[UploadFile] = File(...), min_range: float = Query(0.0), max_range: float = Query(1.0)):
-    results = []
-    for file in files:
-        result = process_file(file, min_range, max_range)
-        if result:
-            results.append(result)
-        if results:
-            output_path = "batch_output.csv"
-            save_to_csv(results, output_path)
-            return JSONResponse(content={"message": "Batch extraction successful", "output_file": output_path})
-    else:
-        return JSONResponse(content={"message": "Failed to read files or empty batch"}, status_code=400)
+# @app.post("/extract/batch")
+# async def extract_batch(files: List[UploadFile] = File(...), min_range: float = Query(0.0), max_range: float = Query(1.0)):
+#     results = []
+#     for file in files:
+#         result = process_file(file, min_range, max_range)
+#         if result:
+#             results.append(result)
+#         if results:
+#             output_path = "batch_output.csv"
+#             save_to_csv(results, output_path)
+#             return JSONResponse(content={"message": "Batch extraction successful", "output_file": output_path})
+#     else:
+#         return JSONResponse(content={"message": "Failed to read files or empty batch"}, status_code=400)
     
 
 # We are giving an example usage 
@@ -166,3 +336,4 @@ try:
     raise FileReadError("FileNotFound", file_name)
 except FileReadError as e:
     print(e.message)
+    
