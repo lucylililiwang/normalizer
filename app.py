@@ -8,6 +8,7 @@ from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 import pandas as pd
 import io
 import chardet
+import json
 app = FastAPI()
 
 # We are defining the custom exceptions
@@ -282,6 +283,245 @@ def recover_incomplete_lines(file_content, delimiter=','):
         recovered_data.append(incomplete_line.split(delimiter))
     return recovered_data
 
+# We are checking for CSV Files invliad types
+# First we wish to check for incorrect number of columns in one or more rows
+# We are creating a function to check whether there is incorrect number of columns
+def has_incorrect_columns(file_content,delimiter=','):
+    """
+    Check if a CSV file has incorrect number of columns in one or more rows.
+    
+
+    Args:
+        file_content (str): Content of the CSV file as a string.
+        delimiter (str): Delimiter used in the CSV file. Default is ','.
+
+    Returns:
+        bool: True if any row has a  different number of columns compared to the others, False otherwise
+        
+    """
+    # We are split the file content into lines
+    lines = file_content.splitlines()
+    if not lines:
+        # If there are no lines, return False
+        return False
+    # We are getting the number of columns in the first row
+    first_row_columns = len(lines[0].split(delimiter))
+    # We are Iterate over the rest of the rows
+    for line in lines[1:]:
+        # We are getting the number of columns in the current row
+        current_row_columns = len(line.split(delimiter))
+        # We are check if the number of columns in the current row is different from the first row, return True
+        if current_row_columns != first_row_columns:
+            return True
+    # When we find out if all rows have the same number of columns as the first row return False
+    return False
+# We need to create a function to fix incorrect number of colums
+def fix_incorrect_columns(file_content, delimiter=','):
+    """
+    Fix incorrect number of columns in one or more rows of a CSV file.
+
+    Args:
+        file_content (str): Content of the CSV file as a string.
+        delimiter (str): Delimiter used in the CSV file. Default is ','.
+
+    Returns:
+        str: Fixed content of the CSV file with consistent number of columns in each row.
+    """
+    # We are split the file content into lines
+    lines = file_content.splitlines()
+    if not lines:
+        # We are check if there are no lines, return the original content
+        return file_content
+    
+    # We are getting the maximum number of columns among all rows
+    max_columns = max(len(line.split(delimiter)) for line in lines)
+    # We are generate a template row with the maximum number of columns
+    template_row = delimiter.join([''] * max_columns)
+    # We are iterate over the rows and fix the number of columns in each row
+    fixed_content = []
+    for line in lines:
+        # We are split the line into columns
+        columns = line.split(delimiter)
+        # We are pad or truncate the columns to match the maximum number of columns
+        fixed_row = columns + [''] * (max_columns - len(columns))
+        # We are join the fixed row back into a line and append it to the fixed content
+        fixed_content.append(delimiter.join(fixed_row))
+    # We are join all fixed rows into a single string
+    fixed_file_content = '\n'.join(fixed_content)
+    
+    return fixed_file_content
+# We also need to create a function to taking care of has_malformed_data
+def has_malformed_data(file_content, delimiter=','):
+    """
+    Check if a CSV file contains malformed data within cells.
+
+    Args:
+        file_content (str): Content of the CSV file as a string.
+        delimiter (str): Delimiter used in the CSV file.Default is ','.
+
+   
+
+    Returns:
+        bool : True if any cell contains malformed data, False otherwise.
+    """
+    # We are split the file content into lines
+    lines = file_content.splitlines()
+    # We are Iterate over each line
+    for line in lines:
+        # We are split the line into cells
+        cells = line.split(delimiter)
+        # We are check each cell malformed data
+        for cell in cells:
+            # We are check for unescaped quotes
+            if '"' in cell and not (cells.startswith('"') and cell.endswith('"')):
+                return True
+            # We are check for newline characters
+            if '\n' in cell or '\r' in cell:
+                return True
+    return False
+# We are creating a function to fix malformed data
+def fix_malformed_data(file_content, delimiter= ','):
+    """
+    Fix malformed data within cells of a CSV file.
+
+    Args:
+        file_content (str): Content of the CSV file as a string.
+        delimiter (str): Delmiter used i the CSV file. Default is ','.
+
+    
+    Returns:
+        str: The fixed content of the CSV file.
+    """
+    lines = file_content.splitlines()
+    fixed_lines = []
+    for line in lines:
+        cells = line.split(delimiter)
+        fixed_cells = []
+        
+        for cell in cells:
+            if '"' in cell:
+                # We are fix unescaped quotes by escaping them
+                if(cell.count('"') % 2 == 1) or \
+                    (cell.startswith('"') and not cell.endswith('"')) or \
+                    (not cell.startswith('"') and cell.endswith('"')):
+                        cell = cell.replace('"','""')
+                        
+            # We are fix multline cells by enclosing them inquotes
+            if '\n' in cell or '\r' in cell:
+                cell = '"' + cell.replace('"','""') + '"'
+            fixed_cells.append(cell)
+        fixed_line = delimiter.join(fixed_cells)
+        fixed_lines.append(fixed_line)
+    return '\n'.join(fixed_lines)
+# We are creating a function to detect non numeric data
+def detect_non_numeric_columns(csv_data, numeric_columns):
+    """
+    Detect non-numeric data in columns expected to contain numeric values.
+
+    Args:
+        csv_data (list of lists): List of rows from the CSV file where each row is represented as a list of values.
+        numeric_columns (list of int): Indices of columns expected to contain numeric values.
+
+    Returns:
+        list: indices of columns containing non-numeric data.
+    """
+    non_numeric_columns = []
+    for column_index in numeric_columns:
+        for row in csv_data:
+            try:
+                # We are Attempt to convert the cell value to a numeric type
+                float(row[column_index])
+            except ValueError:
+                # when conversion fails, the column contains non-numeric data
+                if column_index not in non_numeric_columns:
+                    non_numeric_columns.append(column_index)
+                break
+    return non_numeric_columns
+# We are creating a function to fx non-numeric columns
+def fix_non_numeric_columns(csv_data, non_numeric_columns, default_value=0):
+    """
+    Fix non-numeric data in columns expected to contain numeric values.
+
+    Args:
+        csv_data (list of lists): List of rows from the CSV file where each row is represented as a list of values.
+        non_numeric_columns (list of int): Indices of columns containing non-numeric data.
+        default_value (int or float): Default value to replace non-numeric data, Default is 0.
+
+    
+    Returns:
+        list of lists: CSV data with non-numeric values replaced with the default value.
+    """
+    fixed_csv_data = []
+    for row in csv_data:
+        # We are make a copy of the row to modify
+        fixed_row = row[:]
+        for column_index in non_numeric_columns:
+            try:
+                # We are attempt to convert the cell value to a  numeric type
+                float(row[column_index])
+            except ValueError:
+                # We are check if conversion fails, replace the non-numeric value with the default vaue
+                fixed_row[column_index] = default_value
+        fixed_csv_data.append(fixed_row)
+        
+    return fixed_csv_data
+# We are creating another function check malformed json
+def check_malformed_json(json_string):
+    """
+    Check for malformed JSON syntax
+
+    Args:
+        json_string (str): _description_
+
+
+    Returns:
+        bool: True if the JSON syntax is malfrmed, False otherwise.
+        
+    """
+    # We are defining the try block
+    try:
+        # We are attempt to parse the JSON string
+        json.loads(json_string)
+    except json.JSONDecodeError:
+        # JSON syntax syntax is malformed
+        return True
+    else:
+        # JSON syntax is valid
+        return False
+# We are creating a function to fix malformed json
+def fix_malformed_json(json_string):
+    """
+    Attempt to fix some common issues in malformed JSON.
+
+    Args:
+        json_string (str): JSON string to fix.
+
+    Returns:
+        str: Fixed JSON string if successful, or original JSON string if unable to fix.
+    """
+    # We are define a try block
+    try:
+        # Try loading JSON to detect syntax errors
+        json.loads(json_string)
+        # If the loading succeeds, JSON is valid, no need to fix
+        return json_string
+    # We are define the except block
+    except json.JSONDecodeError:
+        # If loading fails, try to fix some issues
+        try:
+            # We are Fix missing or extra commax
+            fixed_json = json_string.replace("}{","},{").replace(",}", "}").replace(",]", "]")
+            # We are fix missing quotation marks around keys
+            fixed_json = fixed_json.replace("{", "{\"").replace(",\"", ",\"").replace(":\"", "\":\"")
+            # Fix trailing commas
+            fixed_json = fixed_json.replace(",}", "}").replace(",]", "]")
+            # We are attempt t load fixed JSON to ensure it's valid now
+            json.loads(fixed_json)
+            # We are Return fixed JSON if loading succeeds
+        except json.JSONDecodeError:
+            return json_string
+        
+  
 @app.post("/extract/categorical_variable_handling")   
 async def extract(file: UploadFile = File(...),min_range: float = Query(0.0), max_range: float = Query(1.0)):
     content = await file.read()
